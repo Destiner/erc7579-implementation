@@ -5,6 +5,33 @@ import { DecodeLib } from "../utils/Decode.sol";
 import { IExecution } from "../interfaces/IMSA.sol";
 
 /**
+ * |---------------------------------------------|
+ * | SELECTOR | EXEC_MODE | CONTEXT | CALLDATA   |
+ * |---------------------------------------------|
+ * | 8        | 8         | 30      | n-bytes    |
+ * |---------------------------------------------|
+ *
+ * SELECTOR: 8 bits
+ * Selector is used to determine how the data should be decoded.
+ * It can be either single, batch or delegatecall. In the future different calls could be added. i.e. staticcall
+ * Selector can be used by a validation module to determine how to decode <bytes data>.
+ *
+ * EXEC_MODE: 8 bits
+ * Exec mode is used to determine how the account should handle the execution.
+ * Validator Modules do not have to interpret this value.
+ * It can indicate if the execution should revert on failure or continue execution.
+ * FEEDBACK REQUEST: is it actually a good idea to make this an emum? it might be better
+ * to use a bytes4 value, to avoid "collisions" of different behavior ideas of different account vendors in the futures
+ *
+ * CONTEXT: 30 bits
+ * Context is used to pass data to the execution phase.
+ * It can be used to decode additional context data that the smart account may interpret to change the execution behavior.
+ *
+ * CALLDATA: n bytes
+ * single, delegatecall or batch exec encoded as bytes
+ */
+
+/**
  * this enum informs how the data should be decoded.
  * It defines if the execution is single/batched/delegatecall
  * this enum is in scope for validation modules to be able to decode the data
@@ -38,6 +65,48 @@ library ModeLib {
             _context := shr(192, mode)
         }
     }
+
+    function encode(
+        SELECTOR selector,
+        EXEC_MODE mode,
+        bytes30 context
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
+        return bytes32(uint256(selector) << 248 | uint256(mode) << 224 | uint256(uint240(context)));
+    }
+
+    function encodeBatch(
+        EXEC_MODE _mode,
+        bytes30 context,
+        IExecution.Execution[] calldata executions
+    )
+        internal
+        pure
+        returns (bytes32 mode, bytes memory data)
+    {
+        SELECTOR selector = SELECTOR.BATCH;
+        mode = encode(selector, _mode, context);
+        data = abi.encode(executions);
+    }
+
+    function encodeSingle(
+        EXEC_MODE _mode,
+        bytes30 context,
+        address target,
+        uint256 value,
+        bytes calldata callData
+    )
+        internal
+        pure
+        returns (bytes32 mode, bytes memory data)
+    {
+        SELECTOR selector = SELECTOR.SINGLE;
+        mode = encode(selector, _mode, context);
+        data = abi.encode(target, value, callData);
+    }
 }
 
 abstract contract ModeExecution {
@@ -49,7 +118,6 @@ abstract contract ModeExecution {
         (SELECTOR selector, EXEC_MODE mode, bytes30 context) = _mode.decode();
 
         // (optional) decode stuff from context
-
         if (selector == SELECTOR.BATCH) {
             IExecution.Execution[] calldata executions = data.decodeBatch();
             if (mode == EXEC_MODE.EXEC) {
